@@ -34,8 +34,9 @@ func RedactResult(bundlePath string, input CollectorResult, additionalRedactors 
 
 			// Redact the target file of a symlink
 			// There is an opportunity for improving performance here by skipping symlinks
-			// if a target has been redacted already, but that would require
-			// some extra logic to ensure that a spec filtering only symlinks still works.
+			// if a target has been redacted already, but that requires
+			// some extra logic to ensure that a Redactor spec with a path filter
+			// containing symlinks still works.
 			if info.Mode().Type() == os.ModeSymlink {
 				symlink := file
 				target, err := os.Readlink(filepath.Join(bundlePath, symlink))
@@ -53,6 +54,7 @@ func RedactResult(bundlePath string, input CollectorResult, additionalRedactors 
 			} else {
 				klog.V(2).Infof("Redacting %s\n", file)
 			}
+			klog.V(2).Infof("with %d lines", len(strings.Split(string(file), "\n")))
 			r, err := input.GetReader(bundlePath, file)
 			if err != nil {
 				if os.IsNotExist(errors.Cause(err)) {
@@ -81,6 +83,7 @@ func RedactResult(bundlePath string, input CollectorResult, additionalRedactors 
 			if err != nil {
 				return errors.Wrap(err, "failed to decompress file")
 			}
+			klog.V(2).Infof("Redacting %d files in %s\n", len(subResult), file)
 			err = RedactResult(tmpDir, subResult, additionalRedactors)
 			if err != nil {
 				return errors.Wrap(err, "failed to redact file")
