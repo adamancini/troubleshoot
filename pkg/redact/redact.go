@@ -11,7 +11,6 @@ import (
 	"github.com/pkg/errors"
 	troubleshootv1beta2 "github.com/replicatedhq/troubleshoot/pkg/apis/troubleshoot/v1beta2"
 	"github.com/replicatedhq/troubleshoot/pkg/constants"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -48,7 +47,6 @@ type Redaction struct {
 }
 
 func Redact(input io.Reader, path string, additionalRedactors []*troubleshootv1beta2.Redact) (io.Reader, error) {
-	klog.V(2).Infof("Redacting %s", path)
 	redactors, err := getRedactors(path)
 	if err != nil {
 		return nil, err

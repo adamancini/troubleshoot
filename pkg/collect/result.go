@@ -122,6 +122,8 @@ func (r CollectorResult) SaveResult(bundlePath string, relativePath string, read
 	}
 	defer f.Close()
 
+	//## inject redaction logic here ##
+
 	_, err = io.Copy(f, reader)
 	if err != nil {
 		return errors.Wrap(err, "failed to copy data")

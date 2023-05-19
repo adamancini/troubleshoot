@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -12,7 +14,10 @@ import (
 
 	"github.com/pkg/errors"
 	troubleshootv1beta2 "github.com/replicatedhq/troubleshoot/pkg/apis/troubleshoot/v1beta2"
+	"github.com/replicatedhq/troubleshoot/pkg/constants"
 	"github.com/replicatedhq/troubleshoot/pkg/redact"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/klog/v2"
 )
 
@@ -101,15 +106,21 @@ func RedactResult(bundlePath string, input CollectorResult, additionalRedactors 
 			continue
 		}
 
+		_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(context.Background(), fmt.Sprintf("Redact %s", file))
+		span.SetAttributes(attribute.String("type", "Redactors"))
 		redacted, err := redact.Redact(reader, file, additionalRedactors)
 		if err != nil {
 			return errors.Wrap(err, "failed to redact io stream")
 		}
+		span.End()
 
+		_, span2 := otel.Tracer(constants.LIB_TRACER_NAME).Start(context.Background(), fmt.Sprintf("ReplaceResult %s", file))
+		span2.SetAttributes(attribute.String("type", "Redactors"))
 		err = input.ReplaceResult(bundlePath, file, redacted)
 		if err != nil {
 			return errors.Wrap(err, "failed to create redacted result")
 		}
+		span2.End()
 	}
 	return nil
 }
