@@ -4,11 +4,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/pkg/errors"
+	troubleshootv1beta2 "github.com/replicatedhq/troubleshoot/pkg/apis/troubleshoot/v1beta2"
+	"github.com/replicatedhq/troubleshoot/pkg/constants"
+	"github.com/replicatedhq/troubleshoot/pkg/redact"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"k8s.io/klog/v2"
 )
 
@@ -123,6 +130,23 @@ func (r CollectorResult) SaveResult(bundlePath string, relativePath string, read
 	defer f.Close()
 
 	//## inject redaction logic here ##
+	globalRedactors := []*troubleshootv1beta2.Redact{}
+	// if additionalRedactors != nil {
+	// 	globalRedactors = additionalRedactors.Spec.Redactors
+	// }
+
+	// if opts.Redact {
+	_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(context.Background(), f.Name())
+	span.SetAttributes(attribute.String("type", "Redactors"))
+	klog.V(2).Infof("Redacting %s\n", f.Name())
+	reader, err = redact.Redact(reader, f.Name(), globalRedactors)
+	if err != nil {
+		err = errors.Wrap(err, "failed to redact host collector results")
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	span.End()
+	// }
 
 	_, err = io.Copy(f, reader)
 	if err != nil {

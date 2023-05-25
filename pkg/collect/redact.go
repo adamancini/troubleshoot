@@ -59,7 +59,6 @@ func RedactResult(bundlePath string, input CollectorResult, additionalRedactors 
 			} else {
 				klog.V(2).Infof("Redacting %s\n", file)
 			}
-			klog.V(2).Infof("with %d lines", len(strings.Split(string(file), "\n")))
 			r, err := input.GetReader(bundlePath, file)
 			if err != nil {
 				if os.IsNotExist(errors.Cause(err)) {

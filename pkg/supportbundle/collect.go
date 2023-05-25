@@ -64,22 +64,22 @@ func runHostCollectors(ctx context.Context, hostCollectors []*troubleshootv1beta
 
 	collectResult := allCollectedData
 
-	globalRedactors := []*troubleshootv1beta2.Redact{}
-	if additionalRedactors != nil {
-		globalRedactors = additionalRedactors.Spec.Redactors
-	}
+	// globalRedactors := []*troubleshootv1beta2.Redact{}
+	// if additionalRedactors != nil {
+	// 	globalRedactors = additionalRedactors.Spec.Redactors
+	// }
 
-	if opts.Redact {
-		_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(ctx, "Host collectors")
-		span.SetAttributes(attribute.String("type", "Redactors"))
-		err := collect.RedactResult(bundlePath, collectResult, globalRedactors)
-		if err != nil {
-			err = errors.Wrap(err, "failed to redact host collector results")
-			span.SetStatus(codes.Error, err.Error())
-			return collectResult, err
-		}
-		span.End()
-	}
+	// if opts.Redact {
+	// 	_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(ctx, "Host collectors")
+	// 	span.SetAttributes(attribute.String("type", "Redactors"))
+	// 	err := collect.RedactResult(bundlePath, collectResult, globalRedactors)
+	// 	if err != nil {
+	// 		err = errors.Wrap(err, "failed to redact host collector results")
+	// 		span.SetStatus(codes.Error, err.Error())
+	// 		return collectResult, err
+	// 	}
+	// 	span.End()
+	// }
 
 	return collectResult, nil
 }
@@ -183,24 +183,23 @@ func runCollectors(ctx context.Context, collectors []*troubleshootv1beta2.Collec
 
 	collectResult := allCollectedData
 
-	globalRedactors := []*troubleshootv1beta2.Redact{}
-	if additionalRedactors != nil {
-		globalRedactors = additionalRedactors.Spec.Redactors
-	}
+	// globalRedactors := []*troubleshootv1beta2.Redact{}
+	// if additionalRedactors != nil {
+	// 	globalRedactors = additionalRedactors.Spec.Redactors
+	// }
 
-	if opts.Redact {
-		// TODO: Should we record how long each redactor takes?
-		_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(ctx, "In-cluster collectors")
-		span.SetAttributes(attribute.String("type", "Redactors"))
-		err := collect.RedactResult(bundlePath, collectResult, globalRedactors)
-		if err != nil {
-			err := errors.Wrap(err, "failed to redact in cluster collector results")
-			span.SetStatus(codes.Error, err.Error())
-			span.End()
-			return collectResult, err
-		}
-		span.End()
-	}
+	// if opts.Redact {
+	// 	_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(ctx, "In-cluster collectors")
+	// 	span.SetAttributes(attribute.String("type", "Redactors"))
+	// 	err := collect.RedactResult(bundlePath, collectResult, globalRedactors)
+	// 	if err != nil {
+	// 		err := errors.Wrap(err, "failed to redact in cluster collector results")
+	// 		span.SetStatus(codes.Error, err.Error())
+	// 		span.End()
+	// 		return collectResult, err
+	// 	}
+	// 	span.End()
+	// }
 
 	return collectResult, nil
 }
