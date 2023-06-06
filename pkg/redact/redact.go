@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 	troubleshootv1beta2 "github.com/replicatedhq/troubleshoot/pkg/apis/troubleshoot/v1beta2"
 	"github.com/replicatedhq/troubleshoot/pkg/constants"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -105,12 +106,16 @@ func buildAdditionalRedactors(path string, redacts []*troubleshootv1beta2.Redact
 		for j, re := range redact.Removals.Regex {
 			var newRedactor Redactor
 			if re.Selector != "" {
-				newRedactor, err = NewMultiLineRedactor(re.Selector, re.Redactor, MASK_TEXT, path, redactorName(i, j, redact.Name, "multiLine"), false)
+				newRedactor, err = NewMultiLineRedactor(regexp.MustCompile(re.Selector), regexp.MustCompile(re.Redactor), MASK_TEXT, path, redactorName(i, j, redact.Name, "multiLine"), false)
 				if err != nil {
 					return nil, errors.Wrapf(err, "multiline redactor %+v", re)
 				}
 			} else {
-				newRedactor, err = NewSingleLineRedactor(re.Redactor, MASK_TEXT, path, redactorName(i, j, redact.Name, "regex"), false)
+				compiled, err := regexp.Compile(fmt.Sprintf("(?i)%s", re.Redactor))
+				if err != nil {
+					return nil, errors.Wrapf(err, "compile regex %q", re.Redactor)
+				}
+				newRedactor, err = NewSingleLineRedactor(compiled, MASK_TEXT, path, redactorName(i, j, redact.Name, "regex"), false)
 				if err != nil {
 					return nil, errors.Wrapf(err, "redactor %q", re)
 				}
@@ -158,97 +163,144 @@ func redactMatchesPath(path string, redact *troubleshootv1beta2.Redact) (bool, e
 	return false, nil
 }
 
+// (?i) makes it case insensitive
+// groups named with `?P<mask>` will be masked
+// groups named with `?P<drop>` will be removed (replaced with empty strings)
+var singleLines = []struct {
+	regex *regexp.Regexp
+	name  string
+}{
+	// aws secrets
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*SECRET_?ACCESS_?KEY\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables that look like AWS Secret Access Keys",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*ACCESS_?KEY_?ID\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables that look like AWS Access Keys",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*OWNER_?ACCOUNT\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables that look like AWS Owner or Account numbers",
+	},
+	// passwords in general
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*password[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables with names beginning with 'password'",
+	},
+	// tokens in general
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*token[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables with names beginning with 'token'",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*database[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables with names beginning with 'database'",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(\\\"name\\\":\\\"[^\"]*user[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`),
+		name:  "Redact values for environment variables with names beginning with 'user'",
+	},
+	// connection strings with username and password
+	// http://user:password@host:8888
+	{
+		regex: regexp.MustCompile(`(?i)(https?|ftp)(:\/\/)(?P<mask>[^:\"\/]+){1}(:)(?P<mask>[^@\"\/]+){1}(?P<host>@[^:\/\s\"]+){1}(?P<port>:[\d]+)?`),
+		name:  "Redact connection strings with username and password",
+	},
+	// user:password@tcp(host:3309)/db-name
+	{
+		regex: regexp.MustCompile(`\b(?P<mask>[^:\"\/]*){1}(:)(?P<mask>[^:\"\/]*){1}(@tcp\()(?P<mask>[^:\"\/]*){1}(?P<port>:[\d]*)?(\)\/)(?P<mask>[\w\d\S-_]+){1}\b`),
+		name:  "Redact database connection strings that contain username and password",
+	},
+	// standard postgres and mysql connection strings
+	// protocol://user:password@host:5432/db
+	{
+		regex: regexp.MustCompile(`\b(\w*:\/\/)(?P<mask>[^:\"\/]*){1}(:)(?P<mask>[^:\"\/]*){1}(@)(?P<mask>[^:\"\/]*){1}(?P<port>:[\d]*)?(\/)(?P<mask>[\w\d\S-_]+){1}\b`),
+		name:  "Redact database connection strings that contain username and password",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(Data Source *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'Data Source' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(location *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'location' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(User ID *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'User ID' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(password *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'password' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(Server *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'Server' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(Database *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'Database' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(Uid *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'UID' values commonly found in database connection strings",
+	},
+	{
+		regex: regexp.MustCompile(`(?i)(Pwd *= *)(?P<mask>[^\;]+)(;)`),
+		name:  "Redact 'Pwd' values commonly found in database connection strings",
+	},
+}
+
+var doubleLines = []struct {
+	line1 *regexp.Regexp
+	line2 *regexp.Regexp
+	name  string
+}{
+	{
+		line1: regexp.MustCompile(`(?i)"name": *"[^\"]*SECRET_?ACCESS_?KEY[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact AWS Secret Access Key values in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *"[^\"]*ACCESS_?KEY_?ID[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact AWS Access Key ID values in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *"[^\"]*OWNER_?ACCOUNT[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact AWS Owner and Account Numbers in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *".*password[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact password environment variables in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *".*token[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact values that look like API tokens in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *".*database[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact database connection strings in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"name": *".*user[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("value": *")(?P<mask>.*[^\"]*)(")`),
+		name:  "Redact usernames in multiline JSON",
+	},
+	{
+		line1: regexp.MustCompile(`(?i)"entity": *"(osd|client|mgr)\..*[^\"]*"`),
+		line2: regexp.MustCompile(`(?i)("key": *")(?P<mask>.{38}==[^\"]*)(")`),
+		name:  "Redact 'key' values found in Ceph auth lists",
+	},
+}
+
 func getRedactors(path string) ([]Redactor, error) {
 	// TODO: Make this configurable
-
-	// (?i) makes it case insensitive
-	// groups named with `?P<mask>` will be masked
-	// groups named with `?P<drop>` will be removed (replaced with empty strings)
-	singleLines := []struct {
-		regex string
-		name  string
-	}{
-		// aws secrets
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*SECRET_?ACCESS_?KEY\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables that look like AWS Secret Access Keys",
-		},
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*ACCESS_?KEY_?ID\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables that look like AWS Access Keys",
-		},
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*OWNER_?ACCOUNT\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables that look like AWS Owner or Account numbers",
-		},
-		// passwords in general
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*password[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables with names beginning with 'password'",
-		},
-		// tokens in general
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*token[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables with names beginning with 'token'",
-		},
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*database[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables with names beginning with 'database'",
-		},
-		{
-			regex: `(?i)(\\\"name\\\":\\\"[^\"]*user[^\"]*\\\",\\\"value\\\":\\\")(?P<mask>[^\"]*)(\\\")`,
-			name:  "Redact values for environment variables with names beginning with 'user'",
-		},
-		// connection strings with username and password
-		// http://user:password@host:8888
-		{
-			regex: `(?i)(https?|ftp)(:\/\/)(?P<mask>[^:\"\/]+){1}(:)(?P<mask>[^@\"\/]+){1}(?P<host>@[^:\/\s\"]+){1}(?P<port>:[\d]+)?`,
-			name:  "Redact connection strings with username and password",
-		},
-		// user:password@tcp(host:3309)/db-name
-		{
-			regex: `\b(?P<mask>[^:\"\/]*){1}(:)(?P<mask>[^:\"\/]*){1}(@tcp\()(?P<mask>[^:\"\/]*){1}(?P<port>:[\d]*)?(\)\/)(?P<mask>[\w\d\S-_]+){1}\b`,
-			name:  "Redact database connection strings that contain username and password",
-		},
-		// standard postgres and mysql connection strings
-		// protocol://user:password@host:5432/db
-		{
-			regex: `\b(\w*:\/\/)(?P<mask>[^:\"\/]*){1}(:)(?P<mask>[^:\"\/]*){1}(@)(?P<mask>[^:\"\/]*){1}(?P<port>:[\d]*)?(\/)(?P<mask>[\w\d\S-_]+){1}\b`,
-			name:  "Redact database connection strings that contain username and password",
-		},
-		{
-			regex: `(?i)(Data Source *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'Data Source' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(location *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'location' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(User ID *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'User ID' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(password *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'password' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(Server *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'Server' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(Database *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'Database' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(Uid *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'UID' values commonly found in database connection strings",
-		},
-		{
-			regex: `(?i)(Pwd *= *)(?P<mask>[^\;]+)(;)`,
-			name:  "Redact 'Pwd' values commonly found in database connection strings",
-		},
-	}
 
 	redactors := make([]Redactor, 0)
 	for _, re := range singleLines {
@@ -257,53 +309,6 @@ func getRedactors(path string) ([]Redactor, error) {
 			return nil, err // maybe skip broken ones?
 		}
 		redactors = append(redactors, r)
-	}
-
-	doubleLines := []struct {
-		line1 string
-		line2 string
-		name  string
-	}{
-		{
-			line1: `(?i)"name": *"[^\"]*SECRET_?ACCESS_?KEY[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact AWS Secret Access Key values in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *"[^\"]*ACCESS_?KEY_?ID[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact AWS Access Key ID values in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *"[^\"]*OWNER_?ACCOUNT[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact AWS Owner and Account Numbers in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *".*password[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact password environment variables in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *".*token[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact values that look like API tokens in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *".*database[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact database connection strings in multiline JSON",
-		},
-		{
-			line1: `(?i)"name": *".*user[^\"]*"`,
-			line2: `(?i)("value": *")(?P<mask>.*[^\"]*)(")`,
-			name:  "Redact usernames in multiline JSON",
-		},
-		{
-			line1: `(?i)"entity": *"(osd|client|mgr)\..*[^\"]*"`,
-			line2: `(?i)("key": *")(?P<mask>.{38}==[^\"]*)(")`,
-			name:  "Redact 'key' values found in Ceph auth lists",
-		},
 	}
 
 	for _, l := range doubleLines {
@@ -394,6 +399,7 @@ func addRedaction(redaction Redaction) {
 		defer redactionListMut.Unlock()
 		defer pendingRedactions.Done()
 		allRedactions.ByRedactor[redaction.RedactorName] = append(allRedactions.ByRedactor[redaction.RedactorName], redaction)
+		klog.V(3).Infof("Redaction: %+v on file: %+v", redaction.RedactorName, redaction.File)
 		allRedactions.ByFile[redaction.File] = append(allRedactions.ByFile[redaction.File], redaction)
 	}(redaction)
 }

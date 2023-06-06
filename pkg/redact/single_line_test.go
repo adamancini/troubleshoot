@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"io/ioutil"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -105,7 +106,9 @@ func TestNewSingleLineRedactor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := require.New(t)
 			ResetRedactionList()
-			reRunner, err := NewSingleLineRedactor(tt.re, MASK_TEXT, "testfile", tt.name, false)
+			rr, err := regexp.Compile(tt.re)
+			req.NoError(err)
+			reRunner, err := NewSingleLineRedactor(rr, MASK_TEXT, "testfile", tt.name, false)
 			req.NoError(err)
 
 			outReader := reRunner.Redact(bytes.NewReader([]byte(tt.inputString)), "")

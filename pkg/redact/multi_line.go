@@ -2,9 +2,15 @@ package redact
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
+
+	"github.com/replicatedhq/troubleshoot/pkg/constants"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type MultiLineRedactor struct {
@@ -16,20 +22,16 @@ type MultiLineRedactor struct {
 	isDefault  bool
 }
 
-func NewMultiLineRedactor(re1, re2, maskText, path, name string, isDefault bool) (*MultiLineRedactor, error) {
-	compiled1, err := regexp.Compile(re1)
-	if err != nil {
-		return nil, err
-	}
-	compiled2, err := regexp.Compile(re2)
-	if err != nil {
-		return nil, err
-	}
-	return &MultiLineRedactor{re1: compiled1, re2: compiled2, maskText: maskText, filePath: path, redactName: name, isDefault: isDefault}, nil
+func NewMultiLineRedactor(re1, re2 *regexp.Regexp, maskText, path, name string, isDefault bool) (*MultiLineRedactor, error) {
+	return &MultiLineRedactor{re1: re1, re2: re2, maskText: maskText, filePath: path, redactName: name, isDefault: isDefault}, nil
 }
 
 func (r *MultiLineRedactor) Redact(input io.Reader, path string) io.Reader {
 	out, writer := io.Pipe()
+
+	_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(context.Background(), fmt.Sprintf("Redactor %s", r.redactName))
+	span.SetAttributes(attribute.String("type", reflect.TypeOf(MultiLineRedactor{}).String()))
+
 	go func() {
 		var err error
 		defer func() {
@@ -87,6 +89,7 @@ func (r *MultiLineRedactor) Redact(input io.Reader, path string) io.Reader {
 			fmt.Fprintf(writer, "%s\n", line1)
 		}
 	}()
+	span.End()
 	return out
 }
 

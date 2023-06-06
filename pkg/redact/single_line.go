@@ -2,9 +2,15 @@ package redact
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
+
+	"github.com/replicatedhq/troubleshoot/pkg/constants"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type SingleLineRedactor struct {
@@ -15,16 +21,15 @@ type SingleLineRedactor struct {
 	isDefault  bool
 }
 
-func NewSingleLineRedactor(re, maskText, path, name string, isDefault bool) (*SingleLineRedactor, error) {
-	compiled, err := regexp.Compile(re)
-	if err != nil {
-		return nil, err
-	}
-	return &SingleLineRedactor{re: compiled, maskText: maskText, filePath: path, redactName: name, isDefault: isDefault}, nil
+func NewSingleLineRedactor(re *regexp.Regexp, maskText, path, name string, isDefault bool) (*SingleLineRedactor, error) {
+	return &SingleLineRedactor{re: re, maskText: maskText, filePath: path, redactName: name, isDefault: isDefault}, nil
 }
 
 func (r *SingleLineRedactor) Redact(input io.Reader, path string) io.Reader {
 	out, writer := io.Pipe()
+
+	_, span := otel.Tracer(constants.LIB_TRACER_NAME).Start(context.Background(), fmt.Sprintf("Redactor %s", r.redactName))
+	span.SetAttributes(attribute.String("type", reflect.TypeOf(SingleLineRedactor{}).String()))
 
 	go func() {
 		var err error
@@ -73,5 +78,6 @@ func (r *SingleLineRedactor) Redact(input io.Reader, path string) io.Reader {
 			}
 		}
 	}()
+	span.End()
 	return out
 }
